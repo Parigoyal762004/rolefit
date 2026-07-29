@@ -4,21 +4,39 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load THIS project's .env and nothing else.
+#
+# Bare load_dotenv() walks up the directory tree looking for a .env, which means
+# a file belonging to a parent folder or an unrelated project can configure this
+# one. Pinning the path removes that.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_REPO, ".env"), override=True)
+
+
+def _own(name: str, default: str = "") -> str:
+    """Read a ROLEFIT_-prefixed variable, never a bare ambient one.
+
+    This machine has SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY set as
+    machine-wide Windows environment variables, pointing at a different
+    project's production database with an admin key. Reading the unprefixed
+    names would silently point this app at that database, and the failure would
+    look like an auth error rather than what it is. Prefixing means ambient
+    variables cannot reach this app at all.
+    """
+    return os.environ.get(f"ROLEFIT_{name}", default)
 
 # --- Supabase -------------------------------------------------------------
 # These two are publishable on purpose. A Supabase publishable key is designed
 # to ship in browser bundles; it grants nothing on its own because every table
 # has RLS enabled with no policies. All reads go through security-definer
 # functions that expose exactly what the demo needs and nothing else.
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL", "https://usfxjkroohbttyntpymd.supabase.co")
-SUPABASE_PUBLISHABLE_KEY = os.environ.get(
+SUPABASE_URL = _own("SUPABASE_URL", "https://usfxjkroohbttyntpymd.supabase.co")
+SUPABASE_PUBLISHABLE_KEY = _own(
     "SUPABASE_PUBLISHABLE_KEY", "sb_publishable_Aq5OtPNRmENil05atlZ6OQ_nSK7MIcW")
 
 # Writes only. Never set this in the deployed environment: the public app is
 # read-only by design. Ingest is a local CLI operation.
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
+SUPABASE_SECRET_KEY = _own("SUPABASE_SECRET_KEY", "")
 
 # --- Models ---------------------------------------------------------------
 # Groq exposes no embeddings endpoint, so embeddings come from a Supabase Edge
@@ -28,9 +46,9 @@ EMBED_DIM = 384
 
 # Generation and grading. Groq is OpenAI wire-compatible, so the standard
 # OpenAI client works against it with a different base URL.
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_KEY = _own("GROQ_API_KEY", "")
+GROQ_BASE_URL = _own("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+CHAT_MODEL = _own("CHAT_MODEL", "llama-3.3-70b-versatile")
 
 # --- Chunking -------------------------------------------------------------
 # Job descriptions are short and highly structured: a paragraph of company
