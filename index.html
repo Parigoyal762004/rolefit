@@ -123,9 +123,10 @@
                    +-- out of attempts -&gt; admit_gap -> END</pre>
     <p>The <code>admit_gap</code> branch is the point. Ask it something the
     corpus does not cover and it says so instead of inventing an answer.</p>
-    <p>FastAPI, LangChain and LangGraph, Postgres with pgvector on Supabase,
-    OpenAI <code>text-embedding-3-small</code>, Claude for generation and
-    grading. <a href="/api/health">API health</a></p>
+    <p>FastAPI and LangGraph on Vercel, Postgres with pgvector on Supabase.
+    Embeddings run on <code>gte-small</code> inside a Supabase Edge Function,
+    because xAI has no embeddings endpoint and retrieval needs one anyway.
+    Grok 4.5 generates and grades. <a href="/api/health">API health</a></p>
   </div>
 
 </div>

@@ -3,73 +3,70 @@
 Local:      uvicorn rolefit.api:app --reload
 On Vercel:  api/index.py re-exports `app`; see vercel.json
 
-Connection handling is written for serverless, not for a long-lived server. A
-Lambda that has been frozen and thawed comes back with a Postgres socket that
-looks open and is not, so every request checks and reconnects rather than
-trusting a module-level global. The Supabase transaction pooler on 6543 is the
-right endpoint for this; the direct 5432 connection will exhaust its pool once
-more than a handful of function instances are warm.
+The deployed app is read-only. There is no write endpoint, because this is a
+public URL and an open ingest route on it would let anyone insert rows and spend
+the API budget. Ingest is a local CLI operation against the secret key.
 """
 
 import os
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from . import config as cfg
+from . import limits
+from . import supabase as sb
 from .graph import ask, build_graph
-from .ingest import connect, ingest_one
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE: dict = {}
 
-
-def _oai() -> OpenAI:
-    if "oai" not in _STATE:
-        _STATE["oai"] = OpenAI(
-            api_key=cfg.require("OPENAI_API_KEY", cfg.OPENAI_API_KEY))
-    return _STATE["oai"]
-
-
-def _conn():
-    conn = _STATE.get("conn")
-    if conn is None or conn.closed:
-        conn = connect()
-        _STATE["conn"] = conn
-        # The graph closes over the connection, so it has to be rebuilt too.
-        _STATE.pop("graph", None)
-    return conn
+ALLOWED_OUTCOMES = {"applied", "no_response", "rejected", "screen",
+                    "interview", "offer"}
 
 
 def _graph():
-    conn = _conn()
     if "graph" not in _STATE:
-        _STATE["graph"] = build_graph(conn, _oai())
+        _STATE["graph"] = build_graph()
     return _STATE["graph"]
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    yield
-    conn = _STATE.get("conn")
-    if conn is not None and not conn.closed:
-        conn.close()
+app = FastAPI(title="RoleFit", version="1.0.0")
+
+# The page and API are same-origin, so no cross-origin request is legitimate
+# unless it is one of these. A wildcard would let any site on the internet spend
+# this deployment's LLM budget from a visitor's browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://rolefit-wine.vercel.app",
+                   "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["content-type"],
+)
 
 
-app = FastAPI(title="RoleFit", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # The page is entirely self-contained: inline style and script, no external
+    # requests of any kind. So the policy can be this tight.
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'")
+    return resp
 
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
-    outcome: str | None = Field(
-        default=None,
-        description="Filter to one application result: rejected, screen, "
-                    "interview, no_response, offer. Null searches everything.")
+    outcome: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -78,29 +75,17 @@ class AskResponse(BaseModel):
     attempts: int
 
 
-class IngestRequest(BaseModel):
-    company: str
-    role_title: str
-    raw_text: str = Field(min_length=50)
-    outcome: str = "applied"
-    source_url: str | None = None
-
-
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
     """Serve the demo page from the app rather than as a static asset.
 
     Vercel routes every path to this function once vercel.json declares one, so
-    a file sitting at the repo root never gets served and `/` came back as
-    FastAPI's own JSON 404. Reading it here removes the question entirely, and
-    the page stays an ordinary editable file rather than a Python string.
+    a file at the repo root never gets served and `/` came back as FastAPI's own
+    JSON 404. Reading it here removes the question, and the page stays an
+    ordinary editable file rather than a Python string.
     """
-    path = os.path.join(_ROOT, "index.html")
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(os.path.join(_ROOT, "index.html"), encoding="utf-8") as fh:
             return HTMLResponse(fh.read())
     except FileNotFoundError:
         return HTMLResponse("<h1>RoleFit</h1><p>API is up. See "
@@ -109,67 +94,59 @@ def home() -> HTMLResponse:
 
 @app.get("/api/health")
 def health() -> dict:
+    checks = {}
     try:
-        with _conn().cursor() as cur:
-            cur.execute("select count(*) from jd_documents")
-            docs = cur.fetchone()[0]
-            cur.execute("select count(*) from jd_chunks")
-            chunks = cur.fetchone()[0]
-        return {"status": "ok", "documents": docs, "chunks": chunks}
+        sb.embed_one("health check")
+        checks["embeddings"] = "ok"
     except Exception as exc:
-        return {"status": "error", "detail": str(exc)}
-
-
-@app.post("/api/ask", response_model=AskResponse)
-def ask_endpoint(req: AskRequest) -> AskResponse:
+        checks["embeddings"] = f"error: {str(exc)[:120]}"
     try:
-        return AskResponse(**ask(_graph(), req.question, req.outcome))
+        rows = sb.rpc("rolefit_corpus", {})
+        checks["database"] = "ok"
+        checks["documents"] = len(rows)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.post("/api/documents")
-def ingest_endpoint(req: IngestRequest,
-                    authorization: str = Header(default="")) -> dict:
-    """Write endpoint. Requires a bearer token, and is off unless one is set.
-
-    This is a public URL. An unauthenticated write endpoint on it means anyone
-    who finds the deploy can insert rows and spend your embedding budget. Fails
-    closed: if INGEST_TOKEN is unset the endpoint is disabled outright rather
-    than open.
-    """
-    if not cfg.INGEST_TOKEN:
-        raise HTTPException(status_code=503,
-                            detail="Ingestion is disabled. Set INGEST_TOKEN to "
-                                   "enable it.")
-    if authorization != f"Bearer {cfg.INGEST_TOKEN}":
-        raise HTTPException(status_code=401, detail="Bad or missing token.")
-    try:
-        n = ingest_one(_conn(), _oai(), company=req.company,
-                       role=req.role_title, text=req.raw_text,
-                       outcome=req.outcome, url=req.source_url)
-        return {"company": req.company, "role_title": req.role_title,
-                "chunks": n}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        checks["database"] = f"error: {str(exc)[:120]}"
+    checks["llm_key_present"] = bool(cfg.XAI_API_KEY)
+    checks["model"] = cfg.CHAT_MODEL
+    ok = (checks.get("embeddings") == "ok" and checks.get("database") == "ok"
+          and checks["llm_key_present"])
+    return {"status": "ok" if ok else "degraded", **checks}
 
 
 @app.get("/api/corpus")
 def corpus() -> dict:
-    """What is actually in the index. Drives the counter on the demo page."""
+    """What is actually indexed. Drives the counter on the demo page."""
     try:
-        with _conn().cursor() as cur:
-            cur.execute("""
-                select outcome, count(*) from jd_documents
-                group by outcome order by count(*) desc
-            """)
-            by_outcome = {r[0]: r[1] for r in cur.fetchall()}
-            cur.execute("select company, role_title, outcome from jd_documents "
-                        "order by created_at desc limit 50")
-            docs = [{"company": r[0], "role": r[1], "outcome": r[2]}
-                    for r in cur.fetchall()]
-        return {"by_outcome": by_outcome, "documents": docs,
-                "total": sum(by_outcome.values())}
+        rows = sb.rpc("rolefit_corpus", {})
+        by_outcome: dict[str, int] = {}
+        for r in rows:
+            by_outcome[r["outcome"]] = by_outcome.get(r["outcome"], 0) + 1
+        return {"by_outcome": by_outcome, "total": len(rows),
+                "documents": [{"company": r["company"], "role": r["role_title"],
+                               "outcome": r["outcome"]} for r in rows[:50]]}
     except Exception as exc:
         return {"by_outcome": {}, "documents": [], "total": 0,
-                "error": str(exc)}
+                "error": str(exc)[:200]}
+
+
+@app.post("/api/ask", response_model=AskResponse)
+def ask_endpoint(req: AskRequest, request: Request) -> AskResponse:
+    if req.outcome is not None and req.outcome not in ALLOWED_OUTCOMES:
+        raise HTTPException(status_code=400, detail="Unknown outcome filter.")
+
+    verdict = limits.check(limits.client_ip(request))
+    if not verdict.allowed:
+        raise HTTPException(status_code=429, detail=verdict.reason)
+
+    if not cfg.XAI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="XAI_API_KEY is not set on this deployment.")
+
+    try:
+        return AskResponse(**ask(_graph(), req.question, req.outcome))
+    except Exception as exc:
+        # Never surface a raw exception to a public endpoint; it leaks stack
+        # frames, table names and sometimes key fragments.
+        raise HTTPException(status_code=500,
+                            detail="Query failed. " + str(exc)[:160]) from exc

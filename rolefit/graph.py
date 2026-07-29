@@ -1,27 +1,30 @@
-"""The LangGraph agent: retrieve, grade what came back, retry or answer.
+"""The LangGraph agent: retrieve, grade what came back, retry or admit the gap.
 
 This is corrective RAG rather than the straight-line version. The straight line
 is retrieve then generate, which fails silently: if retrieval misses, the model
-still writes a confident paragraph out of whatever it got. Here a grader looks at
-the retrieved chunks first and decides whether they can actually answer the
-question. If they cannot, the query gets rewritten and retrieval runs again. If
-it still cannot, the answer says so rather than inventing one.
+still writes a confident paragraph out of whatever it happened to get, or out of
+training data. Here a grader reads the retrieved chunks first and decides whether
+they can actually answer the question. If they cannot, the query is rewritten and
+retrieval runs again. If it still cannot, the answer says so.
 
     retrieve -> grade -+-- relevant ------> generate -> END
                        |
-                       +-- not relevant --> rewrite -> retrieve  (max 2 times)
+                       +-- not relevant --> rewrite -> retrieve  (max 2)
                        |
                        +-- out of attempts -> admit_gap -> END
 
-The admit_gap path is the one that matters. A system that says "the corpus does
-not cover this" is more useful than one that always produces prose.
+The admit_gap path is the point. A system that says "the corpus does not cover
+this" is worth more than one that always produces prose.
+
+Generation runs on Grok through the OpenAI-compatible endpoint, so the standard
+langchain-openai client works with nothing but a different base URL.
 """
 
 from typing import Annotated, Literal, TypedDict
 
-from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
@@ -29,64 +32,69 @@ from . import config as cfg
 from .retrieve import Chunk, format_context, search
 
 
-class State(TypedDict, total=False):
-    question: str
-    query: str                      # the possibly-rewritten search query
-    outcome_filter: str | None
-    chunks: Annotated[list[Chunk], lambda a, b: b]
-    attempts: int
-    answer: str
-    grade: "Grade | None"
-
-
 class Grade(BaseModel):
-    """Structured output from the grader, so the routing decision is not a vibe."""
-    can_answer: bool = Field(description="Do these chunks contain enough to answer?")
+    """Structured grader output, so the routing decision is not a vibe."""
+    can_answer: bool = Field(description="Do these excerpts contain enough to answer?")
     reason: str = Field(description="One sentence on what is missing, if anything.")
 
 
-def _llm(temperature: float = 0.0):
-    return ChatAnthropic(model=cfg.CHAT_MODEL, temperature=temperature,
-                         api_key=cfg.ANTHROPIC_API_KEY)
+class State(TypedDict, total=False):
+    question: str
+    query: str
+    outcome_filter: str | None
+    chunks: Annotated[list[Chunk], lambda _a, b: b]
+    attempts: int
+    answer: str
+    grade: Grade | None
+
+
+def _llm(temperature: float = 0.0) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=cfg.CHAT_MODEL,
+        temperature=temperature,
+        api_key=cfg.require("XAI_API_KEY", cfg.XAI_API_KEY),
+        base_url=cfg.XAI_BASE_URL,
+        timeout=45,
+        max_retries=1,
+    )
 
 
 GRADE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "You grade retrieved job-description excerpts against a question. "
-     "Be strict. Excerpts that are merely on-topic do not count; they have to "
-     "contain the specific information the question asks for. Answering from "
-     "general knowledge is a failure, not a success."),
+     "You grade retrieved job-description excerpts against a question. Be "
+     "strict. Excerpts that are merely on-topic do not count; they have to "
+     "contain the specific information the question asks for. Being able to "
+     "answer from your own general knowledge is a failure, not a success."),
     ("human", "Question:\n{question}\n\nExcerpts:\n{context}"),
 ])
 
 ANSWER_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "You answer questions about a corpus of job descriptions someone has "
+     "You answer questions about a corpus of job descriptions one person has "
      "applied to. Every excerpt is labelled with the company, the role, and "
      "what happened to that application.\n\n"
      "Rules:\n"
      "- Use only the excerpts. If they do not support a claim, do not make it.\n"
      "- Cite with the bracket numbers, like [2].\n"
-     "- When you are counting how often a requirement appears, say how many "
-     "distinct roles you saw it in, and name them.\n"
+     "- When counting how often a requirement appears, say how many distinct "
+     "roles you saw it in, and name them.\n"
      "- Be blunt about gaps. The person reading this wants to know where they "
-     "fall short, not to feel encouraged."),
+     "fall short, not to be encouraged."),
     ("human", "Question:\n{question}\n\nExcerpts:\n{context}"),
 ])
 
 REWRITE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "Rewrite the search query to retrieve better against job descriptions. "
-     "Use the vocabulary a job posting would actually use, not the vocabulary "
-     "of the question. Return only the rewritten query."),
+     "Rewrite the search query so it retrieves better against job descriptions. "
+     "Use the vocabulary a posting would actually use, not the vocabulary of "
+     "the question. Return only the rewritten query, nothing else."),
     ("human", "Original question: {question}\nTried: {query}\nMissing: {reason}"),
 ])
 
 
-def build_graph(conn, oai):
+def build_graph():
     def retrieve(state: State) -> dict:
-        chunks = search(conn, oai, state["query"],
-                        outcome=state.get("outcome_filter"))
+        chunks = search(state["query"], outcome=state.get("outcome_filter"))
         return {"chunks": chunks, "attempts": state.get("attempts", 0) + 1}
 
     def grade(state: State) -> dict:
@@ -94,10 +102,9 @@ def build_graph(conn, oai):
             return {"grade": Grade(can_answer=False,
                                    reason="retrieval returned nothing")}
         grader = _llm().with_structured_output(Grade)
-        g = grader.invoke(GRADE_PROMPT.format_messages(
+        return {"grade": grader.invoke(GRADE_PROMPT.format_messages(
             question=state["question"],
-            context=format_context(state["chunks"])))
-        return {"grade": g}
+            context=format_context(state["chunks"])))}
 
     def route(state: State) -> Literal["generate", "rewrite", "admit_gap"]:
         g = state.get("grade")
@@ -110,10 +117,9 @@ def build_graph(conn, oai):
     def rewrite(state: State) -> dict:
         g = state.get("grade")
         chain = REWRITE_PROMPT | _llm(0.3) | StrOutputParser()
-        new_q = chain.invoke({"question": state["question"],
-                              "query": state["query"],
-                              "reason": g.reason if g else "nothing retrieved"})
-        return {"query": new_q.strip()}
+        return {"query": chain.invoke({
+            "question": state["question"], "query": state["query"],
+            "reason": g.reason if g else "nothing retrieved"}).strip()}
 
     def generate(state: State) -> dict:
         chain = ANSWER_PROMPT | _llm() | StrOutputParser()
@@ -124,23 +130,20 @@ def build_graph(conn, oai):
     def admit_gap(state: State) -> dict:
         g = state.get("grade")
         why = g.reason if g else "nothing relevant was retrieved"
-        return {"answer": (
-            "The corpus does not cover this. " + why +
-            "\n\nEither the job descriptions you have ingested do not discuss "
-            "it, or you have not ingested enough of them yet.")}
+        return {"answer": ("The corpus does not cover this. " + why +
+                           "\n\nEither the job descriptions in the index do not "
+                           "discuss it, or there are not enough of them yet.")}
 
     sg = StateGraph(State)
-    sg.add_node("retrieve", retrieve)
-    sg.add_node("grade", grade)
-    sg.add_node("rewrite", rewrite)
-    sg.add_node("generate", generate)
-    sg.add_node("admit_gap", admit_gap)
+    for name, fn in (("retrieve", retrieve), ("grade", grade),
+                     ("rewrite", rewrite), ("generate", generate),
+                     ("admit_gap", admit_gap)):
+        sg.add_node(name, fn)
 
     sg.set_entry_point("retrieve")
     sg.add_edge("retrieve", "grade")
     sg.add_conditional_edges("grade", route, {
-        "generate": "generate", "rewrite": "rewrite", "admit_gap": "admit_gap",
-    })
+        "generate": "generate", "rewrite": "rewrite", "admit_gap": "admit_gap"})
     sg.add_edge("rewrite", "retrieve")
     sg.add_edge("generate", END)
     sg.add_edge("admit_gap", END)
@@ -149,10 +152,8 @@ def build_graph(conn, oai):
 
 def ask(app, question: str, outcome: str | None = None) -> dict:
     final = app.invoke({"question": question, "query": question,
-                        "outcome_filter": outcome, "chunks": [], "attempts": 0,
-                        "answer": ""})
-    return {
-        "answer": final["answer"],
-        "sources": [c.cite() for c in final["chunks"]],
-        "attempts": final["attempts"],
-    }
+                        "outcome_filter": outcome, "chunks": [],
+                        "attempts": 0, "answer": ""})
+    return {"answer": final["answer"],
+            "sources": [c.cite() for c in final["chunks"]],
+            "attempts": final["attempts"]}
