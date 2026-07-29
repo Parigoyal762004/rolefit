@@ -40,7 +40,7 @@ app = FastAPI(title="RoleFit", version="1.0.0")
 # this deployment's LLM budget from a visitor's browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://rolefit-wine.vercel.app",
+    allow_origins=["https://rolefit-pari.vercel.app",
                    "http://localhost:8000", "http://127.0.0.1:8000"],
     allow_methods=["GET", "POST"],
     allow_headers=["content-type"],

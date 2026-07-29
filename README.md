@@ -3,7 +3,7 @@
 Retrieval over the job descriptions you actually applied to, so you can ask what
 the rejections have in common.
 
-**Live: https://rolefit-wine.vercel.app**
+**Live: https://rolefit-pari.vercel.app**
 
 I was applying to a lot of AI engineering roles and getting a lot of skill
 mismatch rejections without ever being told which skill. The job descriptions
