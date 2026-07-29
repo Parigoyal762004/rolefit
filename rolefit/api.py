@@ -11,10 +11,12 @@ right endpoint for this; the direct 5432 connection will exhaust its pool once
 more than a handful of function instances are warm.
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -82,6 +84,27 @@ class IngestRequest(BaseModel):
     raw_text: str = Field(min_length=50)
     outcome: str = "applied"
     source_url: str | None = None
+
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@app.get("/", response_class=HTMLResponse)
+def home() -> HTMLResponse:
+    """Serve the demo page from the app rather than as a static asset.
+
+    Vercel routes every path to this function once vercel.json declares one, so
+    a file sitting at the repo root never gets served and `/` came back as
+    FastAPI's own JSON 404. Reading it here removes the question entirely, and
+    the page stays an ordinary editable file rather than a Python string.
+    """
+    path = os.path.join(_ROOT, "index.html")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return HTMLResponse(fh.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>RoleFit</h1><p>API is up. See "
+                            "<a href='/api/health'>/api/health</a>.</p>")
 
 
 @app.get("/api/health")
