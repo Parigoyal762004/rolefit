@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoleFit</title>
+<meta name="description" content="Retrieval over the job descriptions I actually applied to.">
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #16202e; --muted: #5a6675;
+    --accent: #2f5d8c; --rule: #e3e7ec; --code: #f4f6f8;
+    --ok: #2d6a4f; --warn: #9a5b16;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c; --panel: #181d25; --ink: #e6eaf0; --muted: #94a0b0;
+      --accent: #7fb0e0; --rule: #262d38; --code: #1e242d;
+      --ok: #7fc9a3; --warn: #d4a05c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 20px 96px; }
+  header { margin-bottom: 34px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .stats {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    font-size: 13px; color: var(--muted);
+    border-top: 1px solid var(--rule); padding-top: 14px;
+  }
+  .stats b { color: var(--ink); font-weight: 600; }
+  form { margin: 0 0 26px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type=text], select {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--rule); border-radius: 8px; padding: 11px 13px;
+  }
+  input[type=text] { flex: 1 1 320px; }
+  select { flex: 0 0 auto; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--accent); color: #fff; border: 0;
+    border-radius: 8px; padding: 11px 20px;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  .examples { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .examples button {
+    background: transparent; color: var(--accent); border: 1px solid var(--rule);
+    font-weight: 400; font-size: 13px; padding: 6px 11px; border-radius: 999px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 12px; padding: 20px 22px; margin-bottom: 16px;
+  }
+  .answer { white-space: pre-wrap; }
+  .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  ol.sources { margin: 0; padding-left: 20px; font-size: 13.5px; color: var(--muted); }
+  ol.sources li { margin-bottom: 3px; }
+  .meta { font-size: 12.5px; color: var(--muted); margin-top: 14px;
+          border-top: 1px solid var(--rule); padding-top: 12px; }
+  .how { font-size: 14px; color: var(--muted); }
+  .how h2 { font-size: 14px; color: var(--ink); margin: 0 0 10px; }
+  .how p { margin: 0 0 12px; }
+  pre {
+    background: var(--code); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5;
+  }
+  a { color: var(--accent); }
+  .spin { display: inline-block; animation: r 1s linear infinite; }
+  @keyframes r { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>RoleFit</h1>
+    <p class="sub">Retrieval over the job descriptions I actually applied to.</p>
+    <div class="stats" id="stats"><span>loading corpus…</span></div>
+  </header>
+
+  <form id="f">
+    <div class="row">
+      <input type="text" id="q" placeholder="What do the roles that rejected me ask for?" required minlength="3">
+      <select id="outcome">
+        <option value="">all applications</option>
+        <option value="rejected">rejected only</option>
+        <option value="no_response">no response only</option>
+        <option value="screen">reached a screen</option>
+        <option value="interview">reached interview</option>
+      </select>
+      <button type="submit" id="go">Ask</button>
+    </div>
+    <div class="examples" id="ex"></div>
+  </form>
+
+  <div id="out"></div>
+
+  <div class="card how">
+    <h2>How it works</h2>
+    <p><b>Hybrid retrieval.</b> Dense embeddings match "owns the system end to
+    end" against "full ownership of the stack" where no words overlap. They are
+    bad at rare exact tokens, because <code>LangGraph</code>,
+    <code>pgvector</code> and <code>MCP</code> sit near each other and near a
+    hundred other tool names. Postgres full-text is the reverse. Both run, and
+    the rankings fuse with Reciprocal Rank Fusion, which needs only each
+    retriever's ordering and so avoids weighting cosine distance against
+    <code>ts_rank</code>.</p>
+    <p><b>It grades its own retrieval.</b> Retrieve-then-generate fails
+    quietly: if retrieval misses, the model still writes a confident paragraph
+    out of training data. Here a grader reads the chunks first and decides
+    whether they can answer the question at all.</p>
+<pre>retrieve -> grade -+-- relevant ------&gt; generate -> END
+                   +-- not relevant --&gt; rewrite -> retrieve   (max 2)
+                   +-- out of attempts -&gt; admit_gap -> END</pre>
+    <p>The <code>admit_gap</code> branch is the point. Ask it something the
+    corpus does not cover and it says so instead of inventing an answer.</p>
+    <p>FastAPI, LangChain and LangGraph, Postgres with pgvector on Supabase,
+    OpenAI <code>text-embedding-3-small</code>, Claude for generation and
+    grading. <a href="/api/health">API health</a></p>
+  </div>
+
+</div>
+
+<script>
+const EXAMPLES = [
+  "Which technical requirements appear most often?",
+  "What do the rejections ask for that the others do not?",
+  "How many roles mention RAG or vector databases?",
+  "What is the average salary in Singapore?"
+];
+
+const $ = s => document.querySelector(s);
+
+EXAMPLES.forEach(t => {
+  const b = document.createElement("button");
+  b.type = "button"; b.textContent = t;
+  b.onclick = () => { $("#q").value = t; $("#f").requestSubmit(); };
+  $("#ex").appendChild(b);
+});
+
+fetch("/api/corpus").then(r => r.json()).then(d => {
+  const el = $("#stats");
+  if (!d.total) {
+    el.innerHTML = "<span>corpus is empty. ingest some job descriptions first.</span>";
+    return;
+  }
+  const parts = [`<span><b>${d.total}</b> job descriptions indexed</span>`];
+  for (const [k, v] of Object.entries(d.by_outcome)) {
+    parts.push(`<span><b>${v}</b> ${k.replace("_", " ")}</span>`);
+  }
+  el.innerHTML = parts.join("");
+}).catch(() => { $("#stats").innerHTML = "<span>corpus unavailable</span>"; });
+
+$("#f").onsubmit = async e => {
+  e.preventDefault();
+  const q = $("#q").value.trim();
+  const outcome = $("#outcome").value || null;
+  $("#go").disabled = true;
+  $("#out").innerHTML =
+    `<div class="card"><span class="spin">◐</span> retrieving, grading, answering…</div>`;
+  try {
+    const r = await fetch("/api/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: q, outcome })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "request failed");
+    const srcs = (d.sources || []).map(s => `<li>${escapeHtml(s)}</li>`).join("");
+    $("#out").innerHTML = `
+      <div class="card">
+        <div class="label">Answer</div>
+        <div class="answer">${escapeHtml(d.answer)}</div>
+        <div class="meta">${d.attempts > 1
+          ? `retrieval ran ${d.attempts} times: the first pass was graded insufficient and the query was rewritten`
+          : `retrieval ran once`}</div>
+      </div>
+      ${srcs ? `<div class="card"><div class="label">Retrieved from</div>
+        <ol class="sources">${srcs}</ol></div>` : ""}`;
+  } catch (err) {
+    $("#out").innerHTML =
+      `<div class="card"><div class="label">Error</div>${escapeHtml(err.message)}</div>`;
+  } finally {
+    $("#go").disabled = false;
+  }
+};
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+</script>
+</body>
+</html>

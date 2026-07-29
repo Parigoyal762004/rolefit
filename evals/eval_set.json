@@ -1,0 +1,35 @@
+[
+  {
+    "id": "gap-recurring",
+    "question": "Which technical requirements appear in the most job descriptions?",
+    "must_cite_at_least": 3,
+    "must_mention": ["python"],
+    "notes": "Baseline coverage question. If this fails, retrieval is broken, not the model."
+  },
+  {
+    "id": "gap-rejected-only",
+    "question": "What do the roles that rejected me ask for that the others do not?",
+    "outcome": "rejected",
+    "must_cite_at_least": 2,
+    "notes": "The question the whole project exists to answer. Tests that the outcome filter reaches the retriever."
+  },
+  {
+    "id": "rag-specific",
+    "question": "How many roles mention retrieval-augmented generation or vector databases?",
+    "must_cite_at_least": 1,
+    "must_mention": ["rag"],
+    "notes": "Rare exact token. This is the case dense retrieval alone gets wrong and the sparse half of the hybrid catches."
+  },
+  {
+    "id": "seniority",
+    "question": "What years of experience do these roles ask for?",
+    "must_cite_at_least": 2,
+    "notes": "Numbers scattered across documents. Tests that chunking did not orphan them from their context."
+  },
+  {
+    "id": "out-of-corpus",
+    "question": "What is the average salary for these roles in Singapore?",
+    "expect_gap": true,
+    "notes": "Nothing in the corpus answers this. The correct behaviour is admitting so, not inventing a number. This is the most important row in the file."
+  }
+]
