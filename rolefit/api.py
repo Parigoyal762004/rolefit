@@ -147,7 +147,23 @@ def ask_endpoint(req: AskRequest, request: Request) -> AskResponse:
     try:
         return AskResponse(**ask(_graph(), req.question, req.outcome))
     except Exception as exc:
+        text = str(exc)
+        # The provider's own 429 body carries the organization id and account
+        # tier. Truncating it was not enough: the leak sits in the first 80
+        # characters. Upstream quota errors get a message written here instead
+        # of anything forwarded from the provider.
+        if "429" in text or "rate_limit" in text.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="This demo has used its daily model quota. It runs on a "
+                       "free tier capped at 100k tokens a day, which is roughly "
+                       "twelve questions. Try again tomorrow.") from exc
+        if "401" in text or "invalid_api_key" in text.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="The model provider rejected this deployment's "
+                       "credentials.") from exc
         # Never surface a raw exception to a public endpoint; it leaks stack
         # frames, table names and sometimes key fragments.
         raise HTTPException(status_code=500,
-                            detail="Query failed. " + str(exc)[:160]) from exc
+                            detail="Query failed. Check /api/health.") from exc
