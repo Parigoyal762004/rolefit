@@ -33,9 +33,20 @@ from .retrieve import Chunk, format_context, search
 
 
 class Grade(BaseModel):
-    """Structured grader output, so the routing decision is not a vibe."""
-    can_answer: bool = Field(description="Do these excerpts contain enough to answer?")
+    """Structured grader output, so the routing decision is not a vibe.
+
+    can_answer is a yes/no string rather than a bool on purpose. Llama emits
+    "false" as a string for boolean fields, and Groq's tool-call validator
+    rejects the request before pydantic ever gets a chance to coerce it. A
+    string enum is the shape open models reliably produce.
+    """
+    can_answer: Literal["yes", "no"] = Field(
+        description="yes if the excerpts carry evidence bearing on the question")
     reason: str = Field(description="One sentence on what is missing, if anything.")
+
+    @property
+    def ok(self) -> bool:
+        return self.can_answer == "yes"
 
 
 class State(TypedDict, total=False):
@@ -61,10 +72,17 @@ def _llm(temperature: float = 0.0) -> ChatOpenAI:
 
 GRADE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
-     "You grade retrieved job-description excerpts against a question. Be "
-     "strict. Excerpts that are merely on-topic do not count; they have to "
-     "contain the specific information the question asks for. Being able to "
-     "answer from your own general knowledge is a failure, not a success."),
+     "You decide whether retrieved job-description excerpts contain evidence "
+     "that bears on a question.\n\n"
+     "Say yes when the excerpts carry relevant evidence, even partial. Many "
+     "questions here are aggregates, like which requirements appear most "
+     "often. For those, excerpts listing requirements ARE the evidence; you do "
+     "not need every posting in the corpus to answer, and a partial answer "
+     "drawn from what was retrieved is the correct outcome.\n\n"
+     "Say no only when the excerpts are genuinely off-topic, or when the "
+     "question asks for a fact the excerpts simply do not contain, such as "
+     "salary in a country nobody mentions. Answering from your own general "
+     "knowledge rather than the excerpts is a no."),
     ("human", "Question:\n{question}\n\nExcerpts:\n{context}"),
 ])
 
@@ -97,9 +115,11 @@ def build_graph():
         chunks = search(state["query"], outcome=state.get("outcome_filter"))
         return {"chunks": chunks, "attempts": state.get("attempts", 0) + 1}
 
-    def grade(state: State) -> dict:
+    # Node names and state keys share a namespace in LangGraph, so this node
+    # cannot be called "grade" while the state carries a "grade" field.
+    def grade_docs(state: State) -> dict:
         if not state["chunks"]:
-            return {"grade": Grade(can_answer=False,
+            return {"grade": Grade(can_answer="no",
                                    reason="retrieval returned nothing")}
         grader = _llm().with_structured_output(Grade)
         return {"grade": grader.invoke(GRADE_PROMPT.format_messages(
@@ -108,7 +128,7 @@ def build_graph():
 
     def route(state: State) -> Literal["generate", "rewrite", "admit_gap"]:
         g = state.get("grade")
-        if g is not None and g.can_answer:
+        if g is not None and g.ok:
             return "generate"
         if state.get("attempts", 0) >= cfg.MAX_RETRIEVAL_ATTEMPTS:
             return "admit_gap"
@@ -135,14 +155,14 @@ def build_graph():
                            "discuss it, or there are not enough of them yet.")}
 
     sg = StateGraph(State)
-    for name, fn in (("retrieve", retrieve), ("grade", grade),
+    for name, fn in (("retrieve", retrieve), ("grade_docs", grade_docs),
                      ("rewrite", rewrite), ("generate", generate),
                      ("admit_gap", admit_gap)):
         sg.add_node(name, fn)
 
     sg.set_entry_point("retrieve")
-    sg.add_edge("retrieve", "grade")
-    sg.add_conditional_edges("grade", route, {
+    sg.add_edge("retrieve", "grade_docs")
+    sg.add_conditional_edges("grade_docs", route, {
         "generate": "generate", "rewrite": "rewrite", "admit_gap": "admit_gap"})
     sg.add_edge("rewrite", "retrieve")
     sg.add_edge("generate", END)
@@ -156,4 +176,8 @@ def ask(app, question: str, outcome: str | None = None) -> dict:
                         "attempts": 0, "answer": ""})
     return {"answer": final["answer"],
             "sources": [c.cite() for c in final["chunks"]],
+            # The excerpt text, not just the labels. An eval judge that only
+            # sees "Company / Role" cannot verify a single claim, which makes
+            # any faithfulness score computed from labels meaningless.
+            "context": format_context(final["chunks"]),
             "attempts": final["attempts"]}

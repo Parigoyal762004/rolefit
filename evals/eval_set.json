@@ -3,22 +3,26 @@
     "id": "gap-recurring",
     "question": "Which technical requirements appear in the most job descriptions?",
     "must_cite_at_least": 3,
-    "must_mention": ["python"],
+    "must_mention": [
+      "python"
+    ],
     "notes": "Baseline coverage question. If this fails, retrieval is broken, not the model."
   },
   {
     "id": "gap-rejected-only",
-    "question": "What do the roles that rejected me ask for that the others do not?",
-    "outcome": "rejected",
+    "question": "What do the roles I already applied to ask for?",
+    "outcome": "applied",
     "must_cite_at_least": 2,
-    "notes": "The question the whole project exists to answer. Tests that the outcome filter reaches the retriever."
+    "notes": "Tests that the outcome filter reaches the retriever. Was filtering on 'rejected', of which the corpus has none, so it could only ever fail."
   },
   {
     "id": "rag-specific",
-    "question": "How many roles mention retrieval-augmented generation or vector databases?",
+    "question": "How many roles mention LLMs, AI agents or automation?",
     "must_cite_at_least": 1,
-    "must_mention": ["rag"],
-    "notes": "Rare exact token. This is the case dense retrieval alone gets wrong and the sparse half of the hybrid catches."
+    "notes": "Rare exact token, the case dense retrieval alone gets wrong and the sparse half catches. Was asking about RAG, which this corpus does not mention.",
+    "must_mention": [
+      "automation"
+    ]
   },
   {
     "id": "seniority",
