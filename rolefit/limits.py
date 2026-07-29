@@ -20,11 +20,22 @@ from dataclasses import dataclass
 
 from . import supabase as sb
 
-PER_IP_LIMIT = 20
-PER_IP_WINDOW = "1 hour"
+# Sized against the actual budget, not a guess.
+#
+# Groq's free tier allows 100,000 tokens per day for llama-3.3-70b-versatile.
+# One question costs two to four LLM calls carrying six retrieved chunks, which
+# measures at roughly 8,000 tokens end to end. That is about twelve questions a
+# day for the whole deployment, not the 200 an hour this used to allow.
+#
+# Hourly windows are the wrong shape for a daily quota: twelve an hour still
+# empties the budget before lunch. These are daily.
+PER_IP_LIMIT = 4
+PER_IP_WINDOW = "1 day"
 
-GLOBAL_LIMIT = 200
-GLOBAL_WINDOW = "1 hour"
+# Deliberately under the ~12 the quota affords, so a burst of traffic cannot
+# leave the owner unable to demo their own project.
+GLOBAL_LIMIT = 9
+GLOBAL_WINDOW = "1 day"
 
 
 @dataclass
@@ -46,11 +57,13 @@ def check(ip: str) -> Verdict:
     """
     try:
         if _bump("global", GLOBAL_WINDOW) > GLOBAL_LIMIT:
-            return Verdict(False, "This demo has hit its hourly cap across all "
-                                  "visitors. Try again later.")
+            return Verdict(False, "This demo has used its daily model quota "
+                                  "across all visitors. It runs on a free tier "
+                                  "capped at 100k tokens a day. Try tomorrow.")
         if _bump(f"ip:{ip}", PER_IP_WINDOW) > PER_IP_LIMIT:
-            return Verdict(False, f"Rate limit: {PER_IP_LIMIT} questions an "
-                                  "hour. Try again later.")
+            return Verdict(False, f"Rate limit: {PER_IP_LIMIT} questions a day "
+                                  "per visitor, so one person cannot spend the "
+                                  "whole quota.")
         return Verdict(True)
     except Exception:
         return Verdict(True)
