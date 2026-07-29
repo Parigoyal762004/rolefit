@@ -61,8 +61,8 @@ def main() -> int:
 
     graph = build_graph()
     judge = ChatOpenAI(model=cfg.CHAT_MODEL, temperature=0,
-                       api_key=cfg.require("XAI_API_KEY", cfg.XAI_API_KEY),
-                       base_url=cfg.XAI_BASE_URL,
+                       api_key=cfg.require("GROQ_API_KEY", cfg.GROQ_API_KEY),
+                       base_url=cfg.GROQ_BASE_URL,
                        timeout=45).with_structured_output(Judgement)
 
     rows, faithful, cited, honest, n_gap = [], 0, 0, 0, 0

@@ -21,16 +21,16 @@ SUPABASE_PUBLISHABLE_KEY = os.environ.get(
 SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
 
 # --- Models ---------------------------------------------------------------
-# xAI exposes no embeddings endpoint, so embeddings come from a Supabase Edge
+# Groq exposes no embeddings endpoint, so embeddings come from a Supabase Edge
 # Function running gte-small on Supabase's own infrastructure. Free, no extra
 # vendor, 384 dimensions, already normalised for cosine distance.
 EMBED_DIM = 384
 
-# Generation and grading. xAI is OpenAI wire-compatible, so the standard
+# Generation and grading. Groq is OpenAI wire-compatible, so the standard
 # OpenAI client works against it with a different base URL.
-XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
-XAI_BASE_URL = os.environ.get("XAI_BASE_URL", "https://api.x.ai/v1")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "grok-4.5")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama-3.3-70b-versatile")
 
 # --- Chunking -------------------------------------------------------------
 # Job descriptions are short and highly structured: a paragraph of company

@@ -106,7 +106,7 @@ def health() -> dict:
         checks["documents"] = len(rows)
     except Exception as exc:
         checks["database"] = f"error: {str(exc)[:120]}"
-    checks["llm_key_present"] = bool(cfg.XAI_API_KEY)
+    checks["llm_key_present"] = bool(cfg.GROQ_API_KEY)
     checks["model"] = cfg.CHAT_MODEL
     ok = (checks.get("embeddings") == "ok" and checks.get("database") == "ok"
           and checks["llm_key_present"])
@@ -138,10 +138,10 @@ def ask_endpoint(req: AskRequest, request: Request) -> AskResponse:
     if not verdict.allowed:
         raise HTTPException(status_code=429, detail=verdict.reason)
 
-    if not cfg.XAI_API_KEY:
+    if not cfg.GROQ_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="XAI_API_KEY is not set on this deployment.")
+            detail="GROQ_API_KEY is not set on this deployment.")
 
     try:
         return AskResponse(**ask(_graph(), req.question, req.outcome))

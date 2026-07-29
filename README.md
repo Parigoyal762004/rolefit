@@ -43,7 +43,7 @@ retrieve -> grade -+-- relevant ------> generate -> END
 The `admit_gap` branch is the point. Ask it something the corpus does not cover
 and it says so.
 
-**Embeddings with no embeddings vendor.** xAI has no public embeddings endpoint,
+**Embeddings with no embeddings vendor.** Groq has no embeddings endpoint,
 and embeddings are the load-bearing half of retrieval. Rather than add a third
 API to the bill, they run on `gte-small` inside a Supabase Edge Function, on
 Supabase's own infrastructure. 384 dimensions, normalised, free. It scores 61.36
@@ -91,7 +91,7 @@ The deployment is public, so it is built as though people will find it.
 ## Stack
 
 FastAPI and LangGraph on Vercel. Postgres with pgvector on Supabase. `gte-small`
-in a Supabase Edge Function for embeddings. Grok 4.5 for generation and grading,
+in a Supabase Edge Function for embeddings. Llama 3.3 70B on Groq for generation and grading,
 through its OpenAI-compatible endpoint.
 
 ## Running it
@@ -102,7 +102,7 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-`XAI_API_KEY` is the only value the app needs to answer questions. Add
+`GROQ_API_KEY` is the only value the app needs to answer questions. Add
 `SUPABASE_SECRET_KEY` as well if you want to ingest.
 
 ```bash

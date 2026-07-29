@@ -16,7 +16,7 @@ retrieval runs again. If it still cannot, the answer says so.
 The admit_gap path is the point. A system that says "the corpus does not cover
 this" is worth more than one that always produces prose.
 
-Generation runs on Grok through the OpenAI-compatible endpoint, so the standard
+Generation runs on Groq through the OpenAI-compatible endpoint, so the standard
 langchain-openai client works with nothing but a different base URL.
 """
 
@@ -52,8 +52,8 @@ def _llm(temperature: float = 0.0) -> ChatOpenAI:
     return ChatOpenAI(
         model=cfg.CHAT_MODEL,
         temperature=temperature,
-        api_key=cfg.require("XAI_API_KEY", cfg.XAI_API_KEY),
-        base_url=cfg.XAI_BASE_URL,
+        api_key=cfg.require("GROQ_API_KEY", cfg.GROQ_API_KEY),
+        base_url=cfg.GROQ_BASE_URL,
         timeout=45,
         max_retries=1,
     )
