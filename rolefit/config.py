@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+# Guards the write endpoint. Unset means ingestion over HTTP is disabled, which
+# is the correct default for a public deployment. Local CLI ingestion does not
+# use this; it talks to Postgres directly.
+INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 

@@ -14,7 +14,7 @@ more than a handful of function instances are warm.
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from openai import OpenAI
@@ -129,7 +129,21 @@ def ask_endpoint(req: AskRequest) -> AskResponse:
 
 
 @app.post("/api/documents")
-def ingest_endpoint(req: IngestRequest) -> dict:
+def ingest_endpoint(req: IngestRequest,
+                    authorization: str = Header(default="")) -> dict:
+    """Write endpoint. Requires a bearer token, and is off unless one is set.
+
+    This is a public URL. An unauthenticated write endpoint on it means anyone
+    who finds the deploy can insert rows and spend your embedding budget. Fails
+    closed: if INGEST_TOKEN is unset the endpoint is disabled outright rather
+    than open.
+    """
+    if not cfg.INGEST_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="Ingestion is disabled. Set INGEST_TOKEN to "
+                                   "enable it.")
+    if authorization != f"Bearer {cfg.INGEST_TOKEN}":
+        raise HTTPException(status_code=401, detail="Bad or missing token.")
     try:
         n = ingest_one(_conn(), _oai(), company=req.company,
                        role=req.role_title, text=req.raw_text,
